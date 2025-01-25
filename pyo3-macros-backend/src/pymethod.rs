@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::ffi::CString;
 
 use crate::attributes::{NameAttribute, RenamingRule};
-use crate::deprecations::deprecate_trailing_option_default;
 use crate::method::{CallingConvention, ExtractErrorMode, PyArg};
 use crate::params::{impl_regular_arg_param, Holders};
 use crate::utils::PythonDoc;
@@ -527,7 +526,7 @@ fn impl_clear_slot(cls: &syn::Type, spec: &FnSpec<'_>, ctx: &Ctx) -> syn::Result
     })
 }
 
-fn impl_py_class_attribute(
+pub(crate) fn impl_py_class_attribute(
     cls: &syn::Type,
     spec: &FnSpec<'_>,
     ctx: &Ctx,
@@ -685,9 +684,7 @@ pub fn impl_py_setter_def(
                 ctx,
             );
 
-            let deprecation = deprecate_trailing_option_default(spec);
             quote! {
-                #deprecation
                 #from_py_with
                 let _val = #extract;
             }
@@ -1182,25 +1179,26 @@ fn extract_object(
     let Ctx { pyo3_path, .. } = ctx;
     let name = arg.name().unraw().to_string();
 
-    let extract =
-        if let Some(from_py_with) = arg.from_py_with().map(|from_py_with| &from_py_with.value) {
-            quote! {
-                #pyo3_path::impl_::extract_argument::from_py_with(
-                    #pyo3_path::impl_::pymethods::BoundRef::ref_from_ptr(py, &#source_ptr).0,
-                    #name,
-                    #from_py_with as fn(_) -> _,
-                )
-            }
-        } else {
-            let holder = holders.push_holder(Span::call_site());
-            quote! {
-                #pyo3_path::impl_::extract_argument::extract_argument(
-                    #pyo3_path::impl_::pymethods::BoundRef::ref_from_ptr(py, &#source_ptr).0,
-                    &mut #holder,
-                    #name
-                )
-            }
-        };
+    let extract = if let Some(from_py_with) =
+        arg.from_py_with().map(|from_py_with| &from_py_with.value)
+    {
+        quote! {
+            #pyo3_path::impl_::extract_argument::from_py_with(
+                unsafe { #pyo3_path::impl_::pymethods::BoundRef::ref_from_ptr(py, &#source_ptr).0 },
+                #name,
+                #from_py_with as fn(_) -> _,
+            )
+        }
+    } else {
+        let holder = holders.push_holder(Span::call_site());
+        quote! {
+            #pyo3_path::impl_::extract_argument::extract_argument(
+                unsafe { #pyo3_path::impl_::pymethods::BoundRef::ref_from_ptr(py, &#source_ptr).0 },
+                &mut #holder,
+                #name
+            )
+        }
+    };
 
     let extracted = extract_error_mode.handle_error(extract, ctx);
     quote!(#extracted)

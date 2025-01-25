@@ -1,5 +1,6 @@
+use crate::call::PyCallArgs;
 use crate::class::basic::CompareOp;
-use crate::conversion::{private, AsPyPointer, FromPyObjectBound, IntoPy, IntoPyObject};
+use crate::conversion::{AsPyPointer, FromPyObjectBound, IntoPyObject};
 use crate::err::{DowncastError, DowncastIntoError, PyErr, PyResult};
 use crate::exceptions::{PyAttributeError, PyTypeError};
 use crate::ffi_ptr_ext::FfiPtrExt;
@@ -10,8 +11,8 @@ use crate::py_result_ext::PyResultExt;
 use crate::type_object::{PyTypeCheck, PyTypeInfo};
 #[cfg(not(any(PyPy, GraalPy)))]
 use crate::types::PySuper;
-use crate::types::{PyDict, PyIterator, PyList, PyString, PyTuple, PyType};
-use crate::{err, ffi, Borrowed, BoundObject, Py, Python};
+use crate::types::{PyDict, PyIterator, PyList, PyString, PyType};
+use crate::{err, ffi, Borrowed, BoundObject, IntoPyObjectExt, Python};
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::os::raw::c_int;
@@ -227,12 +228,11 @@ pub trait PyAnyMethods<'py>: crate::sealed::Sealed {
     /// ```rust
     /// use pyo3::class::basic::CompareOp;
     /// use pyo3::prelude::*;
-    /// use pyo3::types::PyInt;
     ///
     /// # fn main() -> PyResult<()> {
     /// Python::with_gil(|py| -> PyResult<()> {
-    ///     let a: Bound<'_, PyInt> = 0_u8.into_py(py).into_bound(py).downcast_into()?;
-    ///     let b: Bound<'_, PyInt> = 42_u8.into_py(py).into_bound(py).downcast_into()?;
+    ///     let a = 0_u8.into_pyobject(py)?;
+    ///     let b = 42_u8.into_pyobject(py)?;
     ///     assert!(a.rich_compare(b, CompareOp::Le)?.is_truthy()?);
     ///     Ok(())
     /// })?;
@@ -435,9 +435,9 @@ pub trait PyAnyMethods<'py>: crate::sealed::Sealed {
     /// })
     /// # }
     /// ```
-    fn call<A>(&self, args: A, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>>
+    fn call<A>(&self, args: A, kwargs: Option<&Bound<'py, PyDict>>) -> PyResult<Bound<'py, PyAny>>
     where
-        A: IntoPy<Py<PyTuple>>;
+        A: PyCallArgs<'py>;
 
     /// Calls the object without arguments.
     ///
@@ -492,7 +492,7 @@ pub trait PyAnyMethods<'py>: crate::sealed::Sealed {
     /// ```
     fn call1<A>(&self, args: A) -> PyResult<Bound<'py, PyAny>>
     where
-        A: IntoPy<Py<PyTuple>>;
+        A: PyCallArgs<'py>;
 
     /// Calls a method on the object.
     ///
@@ -535,11 +535,11 @@ pub trait PyAnyMethods<'py>: crate::sealed::Sealed {
         &self,
         name: N,
         args: A,
-        kwargs: Option<&Bound<'_, PyDict>>,
+        kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>>
     where
         N: IntoPyObject<'py, Target = PyString>,
-        A: IntoPy<Py<PyTuple>>;
+        A: PyCallArgs<'py>;
 
     /// Calls a method on the object without arguments.
     ///
@@ -615,7 +615,7 @@ pub trait PyAnyMethods<'py>: crate::sealed::Sealed {
     fn call_method1<N, A>(&self, name: N, args: A) -> PyResult<Bound<'py, PyAny>>
     where
         N: IntoPyObject<'py, Target = PyString>,
-        A: IntoPy<Py<PyTuple>>;
+        A: PyCallArgs<'py>;
 
     /// Returns whether the object is considered to be true.
     ///
@@ -923,11 +923,7 @@ macro_rules! implement_binop {
             let py = self.py();
             inner(
                 self,
-                other
-                    .into_pyobject(py)
-                    .map_err(Into::into)?
-                    .into_any()
-                    .as_borrowed(),
+                other.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
             )
         }
     };
@@ -953,7 +949,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
             }
         }
 
-        inner(self.py(), self.getattr(attr_name).map_err(Into::into))
+        inner(self.py(), self.getattr(attr_name))
     }
 
     fn getattr<N>(&self, attr_name: N) -> PyResult<Bound<'py, PyAny>>
@@ -997,15 +993,8 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            attr_name
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .as_borrowed(),
-            value
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            attr_name.into_pyobject_or_pyerr(py)?.as_borrowed(),
+            value.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 
@@ -1020,13 +1009,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         }
 
         let py = self.py();
-        inner(
-            self,
-            attr_name
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .as_borrowed(),
-        )
+        inner(self, attr_name.into_pyobject_or_pyerr(py)?.as_borrowed())
     }
 
     fn compare<O>(&self, other: O) -> PyResult<Ordering>
@@ -1058,11 +1041,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            other
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            other.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 
@@ -1084,11 +1063,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            other
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            other.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
             compare_op,
         )
     }
@@ -1199,11 +1174,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            other
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            other.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 
@@ -1228,16 +1199,8 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            other
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
-            modulus
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            other.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
+            modulus.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 
@@ -1245,16 +1208,19 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         unsafe { ffi::PyCallable_Check(self.as_ptr()) != 0 }
     }
 
-    fn call<A>(&self, args: A, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Bound<'py, PyAny>>
+    fn call<A>(&self, args: A, kwargs: Option<&Bound<'py, PyDict>>) -> PyResult<Bound<'py, PyAny>>
     where
-        A: IntoPy<Py<PyTuple>>,
+        A: PyCallArgs<'py>,
     {
-        args.__py_call_vectorcall(
-            self.py(),
-            self.as_borrowed(),
-            kwargs.map(Bound::as_borrowed),
-            private::Token,
-        )
+        if let Some(kwargs) = kwargs {
+            args.call(
+                self.as_borrowed(),
+                kwargs.as_borrowed(),
+                crate::call::private::Token,
+            )
+        } else {
+            args.call_positional(self.as_borrowed(), crate::call::private::Token)
+        }
     }
 
     #[inline]
@@ -1264,9 +1230,9 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
 
     fn call1<A>(&self, args: A) -> PyResult<Bound<'py, PyAny>>
     where
-        A: IntoPy<Py<PyTuple>>,
+        A: PyCallArgs<'py>,
     {
-        args.__py_call_vectorcall1(self.py(), self.as_borrowed(), private::Token)
+        args.call_positional(self.as_borrowed(), crate::call::private::Token)
     }
 
     #[inline]
@@ -1274,18 +1240,17 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         &self,
         name: N,
         args: A,
-        kwargs: Option<&Bound<'_, PyDict>>,
+        kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>>
     where
         N: IntoPyObject<'py, Target = PyString>,
-        A: IntoPy<Py<PyTuple>>,
+        A: PyCallArgs<'py>,
     {
-        // Don't `args.into_py()`! This will lose the optimization of vectorcall.
-        match kwargs {
-            Some(_) => self
-                .getattr(name)
-                .and_then(|method| method.call(args, kwargs)),
-            None => self.call_method1(name, args),
+        if kwargs.is_none() {
+            self.call_method1(name, args)
+        } else {
+            self.getattr(name)
+                .and_then(|method| method.call(args, kwargs))
         }
     }
 
@@ -1295,7 +1260,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         N: IntoPyObject<'py, Target = PyString>,
     {
         let py = self.py();
-        let name = name.into_pyobject(py).map_err(Into::into)?.into_bound();
+        let name = name.into_pyobject_or_pyerr(py)?.into_bound();
         unsafe {
             ffi::compat::PyObject_CallMethodNoArgs(self.as_ptr(), name.as_ptr())
                 .assume_owned_or_err(py)
@@ -1305,15 +1270,13 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
     fn call_method1<N, A>(&self, name: N, args: A) -> PyResult<Bound<'py, PyAny>>
     where
         N: IntoPyObject<'py, Target = PyString>,
-        A: IntoPy<Py<PyTuple>>,
+        A: PyCallArgs<'py>,
     {
-        args.__py_call_method_vectorcall1(
-            self.py(),
+        let name = name.into_pyobject_or_pyerr(self.py())?;
+        args.call_method_positional(
             self.as_borrowed(),
-            name.into_pyobject(self.py())
-                .map_err(Into::into)?
-                .as_borrowed(),
-            private::Token,
+            name.as_borrowed(),
+            crate::call::private::Token,
         )
     }
 
@@ -1352,10 +1315,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            key.into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            key.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 
@@ -1377,15 +1337,8 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            key.into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
-            value
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            key.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
+            value.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 
@@ -1402,10 +1355,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            key.into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            key.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 
@@ -1572,11 +1522,7 @@ impl<'py> PyAnyMethods<'py> for Bound<'py, PyAny> {
         let py = self.py();
         inner(
             self,
-            value
-                .into_pyobject(py)
-                .map_err(Into::into)?
-                .into_any()
-                .as_borrowed(),
+            value.into_pyobject_or_pyerr(py)?.into_any().as_borrowed(),
         )
     }
 

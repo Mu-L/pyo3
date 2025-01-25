@@ -1,8 +1,11 @@
-use crate::attributes::{self, get_pyo3_options, CrateAttribute, FromPyWithAttribute};
+use crate::attributes::{
+    self, get_pyo3_options, CrateAttribute, DefaultAttribute, FromPyWithAttribute,
+};
 use crate::utils::Ctx;
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, ToTokens};
 use syn::{
+    ext::IdentExt,
     parenthesized,
     parse::{Parse, ParseStream},
     parse_quote,
@@ -89,6 +92,7 @@ struct NamedStructField<'a> {
     ident: &'a syn::Ident,
     getter: Option<FieldGetter>,
     from_py_with: Option<FromPyWithAttribute>,
+    default: Option<DefaultAttribute>,
 }
 
 struct TupleStructField {
@@ -143,6 +147,10 @@ impl<'a> Container<'a> {
                             attrs.getter.is_none(),
                             field.span() => "`getter` is not permitted on tuple struct elements."
                         );
+                        ensure_spanned!(
+                            attrs.default.is_none(),
+                            field.span() => "`default` is not permitted on tuple struct elements."
+                        );
                         Ok(TupleStructField {
                             from_py_with: attrs.from_py_with,
                         })
@@ -192,10 +200,15 @@ impl<'a> Container<'a> {
                             ident,
                             getter: attrs.getter,
                             from_py_with: attrs.from_py_with,
+                            default: attrs.default,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
-                if options.transparent {
+                if struct_fields.iter().all(|field| field.default.is_some()) {
+                    bail_spanned!(
+                        fields.span() => "cannot derive FromPyObject for structs and variants with only default values"
+                    )
+                } else if options.transparent {
                     ensure_spanned!(
                         struct_fields.len() == 1,
                         fields.span() => "transparent structs and variants can only have 1 field"
@@ -323,11 +336,11 @@ impl<'a> Container<'a> {
     fn build_struct(&self, struct_fields: &[NamedStructField<'_>], ctx: &Ctx) -> TokenStream {
         let Ctx { pyo3_path, .. } = ctx;
         let self_ty = &self.path;
-        let struct_name = &self.name();
-        let mut fields: Punctuated<TokenStream, syn::Token![,]> = Punctuated::new();
+        let struct_name = self.name();
+        let mut fields: Punctuated<TokenStream, Token![,]> = Punctuated::new();
         for field in struct_fields {
-            let ident = &field.ident;
-            let field_name = ident.to_string();
+            let ident = field.ident;
+            let field_name = ident.unraw().to_string();
             let getter = match field.getter.as_ref().unwrap_or(&FieldGetter::GetAttr(None)) {
                 FieldGetter::GetAttr(Some(name)) => {
                     quote!(#pyo3_path::types::PyAnyMethods::getattr(obj, #pyo3_path::intern!(obj.py(), #name)))
@@ -345,18 +358,33 @@ impl<'a> Container<'a> {
                     quote!(#pyo3_path::types::PyAnyMethods::get_item(obj, #pyo3_path::intern!(obj.py(), #field_name)))
                 }
             };
-            let extractor = match &field.from_py_with {
-                None => {
-                    quote!(#pyo3_path::impl_::frompyobject::extract_struct_field(&#getter?, #struct_name, #field_name)?)
-                }
-                Some(FromPyWithAttribute {
-                    value: expr_path, ..
-                }) => {
-                    quote! (#pyo3_path::impl_::frompyobject::extract_struct_field_with(#expr_path as fn(_) -> _, &#getter?, #struct_name, #field_name)?)
-                }
+            let extractor = if let Some(FromPyWithAttribute {
+                value: expr_path, ..
+            }) = &field.from_py_with
+            {
+                quote!(#pyo3_path::impl_::frompyobject::extract_struct_field_with(#expr_path as fn(_) -> _, &value, #struct_name, #field_name)?)
+            } else {
+                quote!(#pyo3_path::impl_::frompyobject::extract_struct_field(&value, #struct_name, #field_name)?)
+            };
+            let extracted = if let Some(default) = &field.default {
+                let default_expr = if let Some(default_expr) = &default.value {
+                    default_expr.to_token_stream()
+                } else {
+                    quote!(::std::default::Default::default())
+                };
+                quote!(if let ::std::result::Result::Ok(value) = #getter {
+                    #extractor
+                } else {
+                    #default_expr
+                })
+            } else {
+                quote!({
+                    let value = #getter?;
+                    #extractor
+                })
             };
 
-            fields.push(quote!(#ident: #extractor));
+            fields.push(quote!(#ident: #extracted));
         }
 
         quote!(::std::result::Result::Ok(#self_ty{#fields}))
@@ -457,6 +485,7 @@ impl ContainerOptions {
 struct FieldPyO3Attributes {
     getter: Option<FieldGetter>,
     from_py_with: Option<FromPyWithAttribute>,
+    default: Option<DefaultAttribute>,
 }
 
 #[derive(Clone, Debug)]
@@ -468,6 +497,7 @@ enum FieldGetter {
 enum FieldPyO3Attribute {
     Getter(FieldGetter),
     FromPyWith(FromPyWithAttribute),
+    Default(DefaultAttribute),
 }
 
 impl Parse for FieldPyO3Attribute {
@@ -511,6 +541,8 @@ impl Parse for FieldPyO3Attribute {
             }
         } else if lookahead.peek(attributes::kw::from_py_with) {
             input.parse().map(FieldPyO3Attribute::FromPyWith)
+        } else if lookahead.peek(Token![default]) {
+            input.parse().map(FieldPyO3Attribute::Default)
         } else {
             Err(lookahead.error())
         }
@@ -522,6 +554,7 @@ impl FieldPyO3Attributes {
     fn from_attrs(attrs: &[Attribute]) -> Result<Self> {
         let mut getter = None;
         let mut from_py_with = None;
+        let mut default = None;
 
         for attr in attrs {
             if let Some(pyo3_attrs) = get_pyo3_options(attr)? {
@@ -541,6 +574,13 @@ impl FieldPyO3Attributes {
                             );
                             from_py_with = Some(from_py_with_attr);
                         }
+                        FieldPyO3Attribute::Default(default_attr) => {
+                            ensure_spanned!(
+                                default.is_none(),
+                                attr.span() => "`default` may only be provided once"
+                            );
+                            default = Some(default_attr);
+                        }
                     }
                 }
             }
@@ -549,6 +589,7 @@ impl FieldPyO3Attributes {
         Ok(FieldPyO3Attributes {
             getter,
             from_py_with,
+            default,
         })
     }
 }
@@ -572,24 +613,27 @@ fn verify_and_get_lifetime(generics: &syn::Generics) -> Result<Option<&syn::Life
 ///   * Derivation for structs with generic fields like `struct<T> Foo(T)`
 ///     adds `T: FromPyObject` on the derived implementation.
 pub fn build_derive_from_pyobject(tokens: &DeriveInput) -> Result<TokenStream> {
+    let options = ContainerOptions::from_attrs(&tokens.attrs)?;
+    let ctx = &Ctx::new(&options.krate, None);
+    let Ctx { pyo3_path, .. } = &ctx;
+
+    let (_, ty_generics, _) = tokens.generics.split_for_impl();
     let mut trait_generics = tokens.generics.clone();
-    let generics = &tokens.generics;
-    let lt_param = if let Some(lt) = verify_and_get_lifetime(generics)? {
+    let lt_param = if let Some(lt) = verify_and_get_lifetime(&trait_generics)? {
         lt.clone()
     } else {
         trait_generics.params.push(parse_quote!('py));
         parse_quote!('py)
     };
-    let mut where_clause: syn::WhereClause = parse_quote!(where);
-    for param in generics.type_params() {
+    let (impl_generics, _, where_clause) = trait_generics.split_for_impl();
+
+    let mut where_clause = where_clause.cloned().unwrap_or_else(|| parse_quote!(where));
+    for param in trait_generics.type_params() {
         let gen_ident = &param.ident;
         where_clause
             .predicates
-            .push(parse_quote!(#gen_ident: FromPyObject<#lt_param>))
+            .push(parse_quote!(#gen_ident: #pyo3_path::FromPyObject<'py>))
     }
-    let options = ContainerOptions::from_attrs(&tokens.attrs)?;
-    let ctx = &Ctx::new(&options.krate, None);
-    let Ctx { pyo3_path, .. } = &ctx;
 
     let derives = match &tokens.data {
         syn::Data::Enum(en) => {
@@ -616,7 +660,7 @@ pub fn build_derive_from_pyobject(tokens: &DeriveInput) -> Result<TokenStream> {
     let ident = &tokens.ident;
     Ok(quote!(
         #[automatically_derived]
-        impl #trait_generics #pyo3_path::FromPyObject<#lt_param> for #ident #generics #where_clause {
+        impl #impl_generics #pyo3_path::FromPyObject<#lt_param> for #ident #ty_generics #where_clause {
             fn extract_bound(obj: &#pyo3_path::Bound<#lt_param, #pyo3_path::PyAny>) -> #pyo3_path::PyResult<Self>  {
                 #derives
             }
