@@ -2,8 +2,6 @@ use std::{cmp, collections, hash};
 
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::types::TypeInfo;
-#[allow(deprecated)]
-use crate::ToPyObject;
 use crate::{
     conversion::IntoPyObject,
     instance::Bound,
@@ -13,8 +11,10 @@ use crate::{
         set::{new_from_iter, try_new_from_iter, PySetMethods},
         PyFrozenSet, PySet,
     },
-    FromPyObject, IntoPy, PyAny, PyErr, PyObject, PyResult, Python,
+    FromPyObject, PyAny, PyErr, PyObject, PyResult, Python,
 };
+#[allow(deprecated)]
+use crate::{IntoPy, ToPyObject};
 
 #[allow(deprecated)]
 impl<T, S> ToPyObject for collections::HashSet<T, S>
@@ -41,6 +41,7 @@ where
     }
 }
 
+#[allow(deprecated)]
 impl<K, S> IntoPy<PyObject> for collections::HashSet<K, S>
 where
     K: IntoPy<PyObject> + Eq + hash::Hash,
@@ -50,11 +51,6 @@ where
         new_from_iter(py, self.into_iter().map(|item| item.into_py(py)))
             .expect("Failed to create Python set from HashSet")
             .into()
-    }
-
-    #[cfg(feature = "experimental-inspect")]
-    fn type_output() -> TypeInfo {
-        TypeInfo::set_of(K::type_output())
     }
 }
 
@@ -70,11 +66,17 @@ where
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         try_new_from_iter(py, self)
     }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::set_of(K::type_output())
+    }
 }
 
 impl<'a, 'py, K, H> IntoPyObject<'py> for &'a collections::HashSet<K, H>
 where
     &'a K: IntoPyObject<'py> + Eq + hash::Hash,
+    K: 'a, // MSRV
     H: hash::BuildHasher,
 {
     type Target = PySet;
@@ -83,6 +85,11 @@ where
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         try_new_from_iter(py, self.iter())
+    }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::set_of(<&K>::type_output())
     }
 }
 
@@ -110,6 +117,7 @@ where
     }
 }
 
+#[allow(deprecated)]
 impl<K> IntoPy<PyObject> for collections::BTreeSet<K>
 where
     K: IntoPy<PyObject> + cmp::Ord,
@@ -118,11 +126,6 @@ where
         new_from_iter(py, self.into_iter().map(|item| item.into_py(py)))
             .expect("Failed to create Python set from BTreeSet")
             .into()
-    }
-
-    #[cfg(feature = "experimental-inspect")]
-    fn type_output() -> TypeInfo {
-        TypeInfo::set_of(K::type_output())
     }
 }
 
@@ -137,11 +140,17 @@ where
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         try_new_from_iter(py, self)
     }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::set_of(K::type_output())
+    }
 }
 
 impl<'a, 'py, K> IntoPyObject<'py> for &'a collections::BTreeSet<K>
 where
     &'a K: IntoPyObject<'py> + cmp::Ord,
+    K: 'a,
 {
     type Target = PySet;
     type Output = Bound<'py, Self::Target>;
@@ -149,6 +158,11 @@ where
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         try_new_from_iter(py, self.iter())
+    }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::set_of(<&K>::type_output())
     }
 }
 
@@ -178,7 +192,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::types::{any::PyAnyMethods, PyFrozenSet, PySet};
-    use crate::{IntoPy, IntoPyObject, PyObject, Python};
+    use crate::{IntoPyObject, PyObject, Python};
     use std::collections::{BTreeSet, HashSet};
 
     #[test]
@@ -208,7 +222,9 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_set_into_py() {
+        use crate::IntoPy;
         Python::with_gil(|py| {
             let bt: BTreeSet<u64> = [1, 2, 3, 4, 5].iter().cloned().collect();
             let hs: HashSet<u64> = [1, 2, 3, 4, 5].iter().cloned().collect();

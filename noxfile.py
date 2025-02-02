@@ -10,7 +10,17 @@ import tempfile
 from functools import lru_cache
 from glob import glob
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+    Generator,
+)
 
 import nox
 import nox.command
@@ -55,15 +65,17 @@ def test_rust(session: nox.Session):
     if not FREE_THREADED_BUILD:
         _run_cargo_test(session, features="abi3")
     if "skip-full" not in session.posargs:
-        _run_cargo_test(session, features="full")
+        _run_cargo_test(session, features="full jiff-01")
         if not FREE_THREADED_BUILD:
-            _run_cargo_test(session, features="abi3 full")
+            _run_cargo_test(session, features="abi3 full jiff-01")
 
 
 @nox.session(name="test-py", venv_backend="none")
 def test_py(session: nox.Session) -> None:
     _run(session, "nox", "-f", "pytests/noxfile.py", external=True)
     for example in glob("examples/*/noxfile.py"):
+        _run(session, "nox", "-f", example, external=True)
+    for example in glob("pyo3-ffi/examples/*/noxfile.py"):
         _run(session, "nox", "-f", example, external=True)
 
 
@@ -337,6 +349,7 @@ def test_emscripten(session: nox.Session):
             f"-C link-arg=-lpython{info.pymajorminor}",
             "-C link-arg=-lexpat",
             "-C link-arg=-lmpdec",
+            "-C link-arg=-lsqlite3",
             "-C link-arg=-lz",
             "-C link-arg=-lbz2",
             "-C link-arg=-sALLOW_MEMORY_GROWTH=1",
@@ -349,7 +362,7 @@ def test_emscripten(session: nox.Session):
         session,
         "bash",
         "-c",
-        f"source {info.builddir/'emsdk/emsdk_env.sh'} && cargo test",
+        f"source {info.builddir / 'emsdk/emsdk_env.sh'} && cargo test",
     )
 
 
@@ -378,6 +391,12 @@ def docs(session: nox.Session) -> None:
     rustdoc_flags.append(session.env.get("RUSTDOCFLAGS", ""))
     session.env["RUSTDOCFLAGS"] = " ".join(rustdoc_flags)
 
+    features = "full"
+
+    if get_rust_version()[:2] >= (1, 70):
+        # jiff needs MSRC 1.70+
+        features += ",jiff-01"
+
     shutil.rmtree(PYO3_DOCS_TARGET, ignore_errors=True)
     _run_cargo(
         session,
@@ -385,7 +404,7 @@ def docs(session: nox.Session) -> None:
         "doc",
         "--lib",
         "--no-default-features",
-        "--features=full",
+        f"--features={features}",
         "--no-deps",
         "--workspace",
         *cargo_flags,
@@ -674,14 +693,6 @@ def test_version_limits(session: nox.Session):
         config_file.set("PyPy", "3.11")
         _run_cargo(session, "check", env=env, expect_error=True)
 
-        # Python build with GIL disabled should fail building
-        config_file.set("CPython", "3.13", build_flags=["Py_GIL_DISABLED"])
-        _run_cargo(session, "check", env=env, expect_error=True)
-
-        # Python build with GIL disabled should pass with env flag on
-        env["UNSAFE_PYO3_BUILD_FREE_THREADED"] = "1"
-        _run_cargo(session, "check", env=env)
-
 
 @nox.session(name="check-feature-powerset", venv_backend="none")
 def check_feature_powerset(session: nox.Session):
@@ -766,8 +777,8 @@ def update_ui_tests(session: nox.Session):
     env["TRYBUILD"] = "overwrite"
     command = ["test", "--test", "test_compile_error"]
     _run_cargo(session, *command, env=env)
-    _run_cargo(session, *command, "--features=full", env=env)
-    _run_cargo(session, *command, "--features=abi3,full", env=env)
+    _run_cargo(session, *command, "--features=full,jiff-01", env=env)
+    _run_cargo(session, *command, "--features=abi3,full,jiff-01", env=env)
 
 
 def _build_docs_for_ffi_check(session: nox.Session) -> None:
@@ -784,7 +795,7 @@ def _get_rust_info() -> Tuple[str, ...]:
     return tuple(output.splitlines())
 
 
-def _get_rust_version() -> Tuple[int, int, int, List[str]]:
+def get_rust_version() -> Tuple[int, int, int, List[str]]:
     for line in _get_rust_info():
         if line.startswith(_RELEASE_LINE_START):
             version = line[len(_RELEASE_LINE_START) :].strip()
@@ -800,30 +811,30 @@ def _get_rust_default_target() -> str:
 
 
 @lru_cache()
-def _get_feature_sets() -> Tuple[Tuple[str, ...], ...]:
+def _get_feature_sets() -> Generator[Tuple[str, ...], None, None]:
     """Returns feature sets to use for clippy job"""
     cargo_target = os.getenv("CARGO_BUILD_TARGET", "")
-    if "wasm32-wasi" not in cargo_target:
+
+    yield from (
+        ("--no-default-features",),
+        (
+            "--no-default-features",
+            "--features=abi3",
+        ),
+    )
+
+    features = "full"
+
+    if "wasm32-wasip1" not in cargo_target:
         # multiple-pymethods not supported on wasm
-        return (
-            ("--no-default-features",),
-            (
-                "--no-default-features",
-                "--features=abi3",
-            ),
-            ("--features=full multiple-pymethods",),
-            ("--features=abi3 full multiple-pymethods",),
-        )
-    else:
-        return (
-            ("--no-default-features",),
-            (
-                "--no-default-features",
-                "--features=abi3",
-            ),
-            ("--features=full",),
-            ("--features=abi3 full",),
-        )
+        features += ",multiple-pymethods"
+
+    if get_rust_version()[:2] >= (1, 70):
+        # jiff needs MSRC 1.70+
+        features += ",jiff-01"
+
+    yield (f"--features={features}",)
+    yield (f"--features=abi3,{features}",)
 
 
 _RELEASE_LINE_START = "release: "
@@ -957,7 +968,7 @@ class _ConfigFile:
             f"""\
 implementation={implementation}
 version={version}
-build_flags={','.join(build_flags)}
+build_flags={",".join(build_flags)}
 suppress_build_script_link_lines=true
 """
         )

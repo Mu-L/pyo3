@@ -2,12 +2,12 @@ use super::any::PyAnyMethods;
 use crate::conversion::IntoPyObject;
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::types::TypeInfo;
-#[allow(deprecated)]
-use crate::ToPyObject;
 use crate::{
-    ffi, ffi_ptr_ext::FfiPtrExt, instance::Bound, Borrowed, FromPyObject, IntoPy, PyAny, PyErr,
-    PyObject, PyResult, Python,
+    ffi, ffi_ptr_ext::FfiPtrExt, instance::Bound, Borrowed, FromPyObject, PyAny, PyErr, PyObject,
+    PyResult, Python,
 };
+#[allow(deprecated)]
+use crate::{IntoPy, ToPyObject};
 use std::convert::Infallible;
 use std::os::raw::c_double;
 
@@ -86,15 +86,11 @@ impl ToPyObject for f64 {
     }
 }
 
+#[allow(deprecated)]
 impl IntoPy<PyObject> for f64 {
     #[inline]
     fn into_py(self, py: Python<'_>) -> PyObject {
         self.into_pyobject(py).unwrap().into_any().unbind()
-    }
-
-    #[cfg(feature = "experimental-inspect")]
-    fn type_output() -> TypeInfo {
-        TypeInfo::builtin("float")
     }
 }
 
@@ -107,6 +103,11 @@ impl<'py> IntoPyObject<'py> for f64 {
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         Ok(PyFloat::new(py, self))
     }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::builtin("float")
+    }
 }
 
 impl<'py> IntoPyObject<'py> for &f64 {
@@ -117,6 +118,11 @@ impl<'py> IntoPyObject<'py> for &f64 {
     #[inline]
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         (*self).into_pyobject(py)
+    }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::builtin("float")
     }
 }
 
@@ -158,15 +164,11 @@ impl ToPyObject for f32 {
     }
 }
 
+#[allow(deprecated)]
 impl IntoPy<PyObject> for f32 {
     #[inline]
     fn into_py(self, py: Python<'_>) -> PyObject {
         self.into_pyobject(py).unwrap().into_any().unbind()
-    }
-
-    #[cfg(feature = "experimental-inspect")]
-    fn type_output() -> TypeInfo {
-        TypeInfo::builtin("float")
     }
 }
 
@@ -179,6 +181,11 @@ impl<'py> IntoPyObject<'py> for f32 {
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         Ok(PyFloat::new(py, self.into()))
     }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::builtin("float")
+    }
 }
 
 impl<'py> IntoPyObject<'py> for &f32 {
@@ -189,6 +196,11 @@ impl<'py> IntoPyObject<'py> for &f32 {
     #[inline]
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         (*self).into_pyobject(py)
+    }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::builtin("float")
     }
 }
 

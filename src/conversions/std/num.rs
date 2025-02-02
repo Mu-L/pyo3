@@ -5,11 +5,9 @@ use crate::ffi_ptr_ext::FfiPtrExt;
 use crate::inspect::types::TypeInfo;
 use crate::types::any::PyAnyMethods;
 use crate::types::{PyBytes, PyInt};
+use crate::{exceptions, ffi, Bound, FromPyObject, PyAny, PyErr, PyObject, PyResult, Python};
 #[allow(deprecated)]
-use crate::ToPyObject;
-use crate::{
-    exceptions, ffi, Bound, FromPyObject, IntoPy, PyAny, PyErr, PyObject, PyResult, Python,
-};
+use crate::{IntoPy, ToPyObject};
 use std::convert::Infallible;
 use std::num::{
     NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8, NonZeroIsize, NonZeroU128,
@@ -26,15 +24,11 @@ macro_rules! int_fits_larger_int {
                 self.into_pyobject(py).unwrap().into_any().unbind()
             }
         }
+        #[allow(deprecated)]
         impl IntoPy<PyObject> for $rust_type {
             #[inline]
             fn into_py(self, py: Python<'_>) -> PyObject {
                 self.into_pyobject(py).unwrap().into_any().unbind()
-            }
-
-            #[cfg(feature = "experimental-inspect")]
-            fn type_output() -> TypeInfo {
-                <$larger_type>::type_output()
             }
         }
 
@@ -46,6 +40,11 @@ macro_rules! int_fits_larger_int {
             fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                 (self as $larger_type).into_pyobject(py)
             }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                <$larger_type>::type_output()
+            }
         }
 
         impl<'py> IntoPyObject<'py> for &$rust_type {
@@ -55,6 +54,11 @@ macro_rules! int_fits_larger_int {
 
             fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                 (*self).into_pyobject(py)
+            }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                <$larger_type>::type_output()
             }
         }
 
@@ -107,15 +111,11 @@ macro_rules! int_convert_u64_or_i64 {
                 self.into_pyobject(py).unwrap().into_any().unbind()
             }
         }
+        #[allow(deprecated)]
         impl IntoPy<PyObject> for $rust_type {
             #[inline]
             fn into_py(self, py: Python<'_>) -> PyObject {
                 self.into_pyobject(py).unwrap().into_any().unbind()
-            }
-
-            #[cfg(feature = "experimental-inspect")]
-            fn type_output() -> TypeInfo {
-                TypeInfo::builtin("int")
             }
         }
         impl<'py> IntoPyObject<'py> for $rust_type {
@@ -130,6 +130,11 @@ macro_rules! int_convert_u64_or_i64 {
                         .downcast_into_unchecked())
                 }
             }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                TypeInfo::builtin("int")
+            }
         }
         impl<'py> IntoPyObject<'py> for &$rust_type {
             type Target = PyInt;
@@ -139,6 +144,11 @@ macro_rules! int_convert_u64_or_i64 {
             #[inline]
             fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                 (*self).into_pyobject(py)
+            }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                TypeInfo::builtin("int")
             }
         }
         impl FromPyObject<'_> for $rust_type {
@@ -163,15 +173,11 @@ macro_rules! int_fits_c_long {
                 self.into_pyobject(py).unwrap().into_any().unbind()
             }
         }
+        #[allow(deprecated)]
         impl IntoPy<PyObject> for $rust_type {
             #[inline]
             fn into_py(self, py: Python<'_>) -> PyObject {
                 self.into_pyobject(py).unwrap().into_any().unbind()
-            }
-
-            #[cfg(feature = "experimental-inspect")]
-            fn type_output() -> TypeInfo {
-                TypeInfo::builtin("int")
             }
         }
 
@@ -187,6 +193,11 @@ macro_rules! int_fits_c_long {
                         .downcast_into_unchecked())
                 }
             }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                TypeInfo::builtin("int")
+            }
         }
 
         impl<'py> IntoPyObject<'py> for &$rust_type {
@@ -197,6 +208,11 @@ macro_rules! int_fits_c_long {
             #[inline]
             fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                 (*self).into_pyobject(py)
+            }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                TypeInfo::builtin("int")
             }
         }
 
@@ -222,14 +238,11 @@ impl ToPyObject for u8 {
         self.into_pyobject(py).unwrap().into_any().unbind()
     }
 }
+#[allow(deprecated)]
 impl IntoPy<PyObject> for u8 {
     #[inline]
     fn into_py(self, py: Python<'_>) -> PyObject {
         self.into_pyobject(py).unwrap().into_any().unbind()
-    }
-    #[cfg(feature = "experimental-inspect")]
-    fn type_output() -> TypeInfo {
-        TypeInfo::builtin("int")
     }
 }
 impl<'py> IntoPyObject<'py> for u8 {
@@ -243,6 +256,11 @@ impl<'py> IntoPyObject<'py> for u8 {
                 .assume_owned(py)
                 .downcast_into_unchecked())
         }
+    }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::builtin("int")
     }
 
     #[inline]
@@ -265,6 +283,11 @@ impl<'py> IntoPyObject<'py> for &'_ u8 {
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         u8::into_pyobject(*self, py)
+    }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::builtin("int")
     }
 
     #[inline]
@@ -340,15 +363,12 @@ mod fast_128bit_int_conversion {
                     self.into_pyobject(py).unwrap().into_any().unbind()
                 }
             }
+
+            #[allow(deprecated)]
             impl IntoPy<PyObject> for $rust_type {
                 #[inline]
                 fn into_py(self, py: Python<'_>) -> PyObject {
                     self.into_pyobject(py).unwrap().into_any().unbind()
-                }
-
-                #[cfg(feature = "experimental-inspect")]
-                fn type_output() -> TypeInfo {
-                    TypeInfo::builtin("int")
                 }
             }
 
@@ -399,6 +419,11 @@ mod fast_128bit_int_conversion {
                         }
                     }
                 }
+
+                #[cfg(feature = "experimental-inspect")]
+                fn type_output() -> TypeInfo {
+                    TypeInfo::builtin("int")
+                }
             }
 
             impl<'py> IntoPyObject<'py> for &$rust_type {
@@ -409,6 +434,11 @@ mod fast_128bit_int_conversion {
                 #[inline]
                 fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                     (*self).into_pyobject(py)
+                }
+
+                #[cfg(feature = "experimental-inspect")]
+                fn type_output() -> TypeInfo {
+                    TypeInfo::builtin("int")
                 }
             }
 
@@ -488,15 +518,11 @@ mod slow_128bit_int_conversion {
                 }
             }
 
+            #[allow(deprecated)]
             impl IntoPy<PyObject> for $rust_type {
                 #[inline]
                 fn into_py(self, py: Python<'_>) -> PyObject {
                     self.into_pyobject(py).unwrap().into_any().unbind()
-                }
-
-                #[cfg(feature = "experimental-inspect")]
-                fn type_output() -> TypeInfo {
-                    TypeInfo::builtin("int")
                 }
             }
 
@@ -518,6 +544,11 @@ mod slow_128bit_int_conversion {
                             .downcast_into_unchecked())
                     }
                 }
+
+                #[cfg(feature = "experimental-inspect")]
+                fn type_output() -> TypeInfo {
+                    TypeInfo::builtin("int")
+                }
             }
 
             impl<'py> IntoPyObject<'py> for &$rust_type {
@@ -528,6 +559,11 @@ mod slow_128bit_int_conversion {
                 #[inline]
                 fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                     (*self).into_pyobject(py)
+                }
+
+                #[cfg(feature = "experimental-inspect")]
+                fn type_output() -> TypeInfo {
+                    TypeInfo::builtin("int")
                 }
             }
 
@@ -540,7 +576,7 @@ mod slow_128bit_int_conversion {
                             -1 as _,
                             ffi::PyLong_AsUnsignedLongLongMask(ob.as_ptr()),
                         )? as $rust_type;
-                        let shift = SHIFT.into_py(py);
+                        let shift = SHIFT.into_pyobject(py)?;
                         let shifted = PyObject::from_owned_ptr_or_err(
                             py,
                             ffi::PyNumber_Rshift(ob.as_ptr(), shift.as_ptr()),
@@ -586,6 +622,7 @@ macro_rules! nonzero_int_impl {
             }
         }
 
+        #[allow(deprecated)]
         impl IntoPy<PyObject> for $nonzero_type {
             #[inline]
             fn into_py(self, py: Python<'_>) -> PyObject {
@@ -602,6 +639,11 @@ macro_rules! nonzero_int_impl {
             fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                 self.get().into_pyobject(py)
             }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                TypeInfo::builtin("int")
+            }
         }
 
         impl<'py> IntoPyObject<'py> for &$nonzero_type {
@@ -612,6 +654,11 @@ macro_rules! nonzero_int_impl {
             #[inline]
             fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
                 (*self).into_pyobject(py)
+            }
+
+            #[cfg(feature = "experimental-inspect")]
+            fn type_output() -> TypeInfo {
+                TypeInfo::builtin("int")
             }
         }
 
@@ -664,11 +711,11 @@ mod test_128bit_integers {
         #[test]
         fn test_i128_roundtrip(x: i128) {
             Python::with_gil(|py| {
-                let x_py = x.into_py(py);
+                let x_py = x.into_pyobject(py).unwrap();
                 let locals = PyDict::new(py);
-                locals.set_item("x_py", x_py.clone_ref(py)).unwrap();
+                locals.set_item("x_py", &x_py).unwrap();
                 py.run(&CString::new(format!("assert x_py == {}", x)).unwrap(), None, Some(&locals)).unwrap();
-                let roundtripped: i128 = x_py.extract(py).unwrap();
+                let roundtripped: i128 = x_py.extract().unwrap();
                 assert_eq!(x, roundtripped);
             })
         }
@@ -680,11 +727,11 @@ mod test_128bit_integers {
                 .prop_map(|x| NonZeroI128::new(x).unwrap())
         ) {
             Python::with_gil(|py| {
-                let x_py = x.into_py(py);
+                let x_py = x.into_pyobject(py).unwrap();
                 let locals = PyDict::new(py);
-                locals.set_item("x_py", x_py.clone_ref(py)).unwrap();
+                locals.set_item("x_py", &x_py).unwrap();
                 py.run(&CString::new(format!("assert x_py == {}", x)).unwrap(), None, Some(&locals)).unwrap();
-                let roundtripped: NonZeroI128 = x_py.extract(py).unwrap();
+                let roundtripped: NonZeroI128 = x_py.extract().unwrap();
                 assert_eq!(x, roundtripped);
             })
         }
@@ -695,11 +742,11 @@ mod test_128bit_integers {
         #[test]
         fn test_u128_roundtrip(x: u128) {
             Python::with_gil(|py| {
-                let x_py = x.into_py(py);
+                let x_py = x.into_pyobject(py).unwrap();
                 let locals = PyDict::new(py);
-                locals.set_item("x_py", x_py.clone_ref(py)).unwrap();
+                locals.set_item("x_py", &x_py).unwrap();
                 py.run(&CString::new(format!("assert x_py == {}", x)).unwrap(), None, Some(&locals)).unwrap();
-                let roundtripped: u128 = x_py.extract(py).unwrap();
+                let roundtripped: u128 = x_py.extract().unwrap();
                 assert_eq!(x, roundtripped);
             })
         }
@@ -711,11 +758,11 @@ mod test_128bit_integers {
                 .prop_map(|x| NonZeroU128::new(x).unwrap())
         ) {
             Python::with_gil(|py| {
-                let x_py = x.into_py(py);
+                let x_py = x.into_pyobject(py).unwrap();
                 let locals = PyDict::new(py);
-                locals.set_item("x_py", x_py.clone_ref(py)).unwrap();
+                locals.set_item("x_py", &x_py).unwrap();
                 py.run(&CString::new(format!("assert x_py == {}", x)).unwrap(), None, Some(&locals)).unwrap();
-                let roundtripped: NonZeroU128 = x_py.extract(py).unwrap();
+                let roundtripped: NonZeroU128 = x_py.extract().unwrap();
                 assert_eq!(x, roundtripped);
             })
         }

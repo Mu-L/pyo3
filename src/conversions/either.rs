@@ -46,15 +46,16 @@
 
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::types::TypeInfo;
-#[allow(deprecated)]
-use crate::ToPyObject;
 use crate::{
-    conversion::IntoPyObject, exceptions::PyTypeError, types::any::PyAnyMethods, Bound,
-    BoundObject, FromPyObject, IntoPy, PyAny, PyErr, PyObject, PyResult, Python,
+    exceptions::PyTypeError, types::any::PyAnyMethods, Bound, FromPyObject, IntoPyObject,
+    IntoPyObjectExt, PyAny, PyErr, PyObject, PyResult, Python,
 };
+#[allow(deprecated)]
+use crate::{IntoPy, ToPyObject};
 use either::Either;
 
 #[cfg_attr(docsrs, doc(cfg(feature = "either")))]
+#[allow(deprecated)]
 impl<L, R> IntoPy<PyObject> for Either<L, R>
 where
     L: IntoPy<PyObject>,
@@ -81,16 +82,8 @@ where
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            Either::Left(l) => l
-                .into_pyobject(py)
-                .map(BoundObject::into_any)
-                .map(BoundObject::into_bound)
-                .map_err(Into::into),
-            Either::Right(r) => r
-                .into_pyobject(py)
-                .map(BoundObject::into_any)
-                .map(BoundObject::into_bound)
-                .map_err(Into::into),
+            Either::Left(l) => l.into_bound_py_any(py),
+            Either::Right(r) => r.into_bound_py_any(py),
         }
     }
 }
@@ -107,16 +100,8 @@ where
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            Either::Left(l) => l
-                .into_pyobject(py)
-                .map(BoundObject::into_any)
-                .map(BoundObject::into_bound)
-                .map_err(Into::into),
-            Either::Right(r) => r
-                .into_pyobject(py)
-                .map(BoundObject::into_any)
-                .map(BoundObject::into_bound)
-                .map_err(Into::into),
+            Either::Left(l) => l.into_bound_py_any(py),
+            Either::Right(r) => r.into_bound_py_any(py),
         }
     }
 }

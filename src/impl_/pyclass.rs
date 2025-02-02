@@ -1,7 +1,4 @@
-#[allow(deprecated)]
-use crate::ToPyObject;
 use crate::{
-    conversion::IntoPyObject,
     exceptions::{PyAttributeError, PyNotImplementedError, PyRuntimeError, PyValueError},
     ffi,
     impl_::{
@@ -12,8 +9,11 @@ use crate::{
     },
     pycell::PyBorrowError,
     types::{any::PyAnyMethods, PyBool},
-    Borrowed, BoundObject, IntoPy, Py, PyAny, PyClass, PyErr, PyRef, PyResult, PyTypeInfo, Python,
+    Borrowed, BoundObject, IntoPyObject, IntoPyObjectExt, Py, PyAny, PyClass, PyErr, PyRef,
+    PyResult, PyTypeInfo, Python,
 };
+#[allow(deprecated)]
+use crate::{IntoPy, ToPyObject};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
@@ -23,8 +23,13 @@ use std::{
     thread,
 };
 
+mod assertions;
 mod lazy_type_object;
+mod probes;
+
+pub use assertions::*;
 pub use lazy_type_object::LazyTypeObject;
+pub use probes::*;
 
 /// Gets the offset of the dictionary from the start of the object in bytes.
 #[inline]
@@ -38,18 +43,27 @@ pub fn weaklist_offset<T: PyClass>() -> ffi::Py_ssize_t {
     PyClassObject::<T>::weaklist_offset()
 }
 
+mod sealed {
+    pub trait Sealed {}
+
+    impl Sealed for super::PyClassDummySlot {}
+    impl Sealed for super::PyClassDictSlot {}
+    impl Sealed for super::PyClassWeakRefSlot {}
+    impl Sealed for super::ThreadCheckerImpl {}
+    impl<T: Send> Sealed for super::SendablePyClass<T> {}
+}
+
 /// Represents the `__dict__` field for `#[pyclass]`.
-pub trait PyClassDict {
+pub trait PyClassDict: sealed::Sealed {
     /// Initial form of a [PyObject](crate::ffi::PyObject) `__dict__` reference.
     const INIT: Self;
     /// Empties the dictionary of its key-value pairs.
     #[inline]
     fn clear_dict(&mut self, _py: Python<'_>) {}
-    private_decl! {}
 }
 
 /// Represents the `__weakref__` field for `#[pyclass]`.
-pub trait PyClassWeakRef {
+pub trait PyClassWeakRef: sealed::Sealed {
     /// Initializes a `weakref` instance.
     const INIT: Self;
     /// Clears the weak references to the given object.
@@ -59,19 +73,16 @@ pub trait PyClassWeakRef {
     /// - The GIL must be held.
     #[inline]
     unsafe fn clear_weakrefs(&mut self, _obj: *mut ffi::PyObject, _py: Python<'_>) {}
-    private_decl! {}
 }
 
 /// Zero-sized dummy field.
 pub struct PyClassDummySlot;
 
 impl PyClassDict for PyClassDummySlot {
-    private_impl! {}
     const INIT: Self = PyClassDummySlot;
 }
 
 impl PyClassWeakRef for PyClassDummySlot {
-    private_impl! {}
     const INIT: Self = PyClassDummySlot;
 }
 
@@ -83,7 +94,6 @@ impl PyClassWeakRef for PyClassDummySlot {
 pub struct PyClassDictSlot(*mut ffi::PyObject);
 
 impl PyClassDict for PyClassDictSlot {
-    private_impl! {}
     const INIT: Self = Self(std::ptr::null_mut());
     #[inline]
     fn clear_dict(&mut self, _py: Python<'_>) {
@@ -101,7 +111,6 @@ impl PyClassDict for PyClassDictSlot {
 pub struct PyClassWeakRefSlot(*mut ffi::PyObject);
 
 impl PyClassWeakRef for PyClassWeakRefSlot {
-    private_impl! {}
     const INIT: Self = Self(std::ptr::null_mut());
     #[inline]
     unsafe fn clear_weakrefs(&mut self, obj: *mut ffi::PyObject, _py: Python<'_>) {
@@ -1029,12 +1038,11 @@ impl<T> PyClassNewTextSignature<T> for &'_ PyClassImplCollector<T> {
 // Thread checkers
 
 #[doc(hidden)]
-pub trait PyClassThreadChecker<T>: Sized {
+pub trait PyClassThreadChecker<T>: Sized + sealed::Sealed {
     fn ensure(&self);
     fn check(&self) -> bool;
     fn can_drop(&self, py: Python<'_>) -> bool;
     fn new() -> Self;
-    private_decl! {}
 }
 
 /// Default thread checker for `#[pyclass]`.
@@ -1057,7 +1065,6 @@ impl<T: Send> PyClassThreadChecker<T> for SendablePyClass<T> {
     fn new() -> Self {
         SendablePyClass(PhantomData)
     }
-    private_impl! {}
 }
 
 /// Thread checker for `#[pyclass(unsendable)]` types.
@@ -1106,7 +1113,6 @@ impl<T> PyClassThreadChecker<T> for ThreadCheckerImpl {
     fn new() -> Self {
         ThreadCheckerImpl(thread::current().id())
     }
-    private_impl! {}
 }
 
 /// Trait denoting that this class is suitable to be used as a base type for PyClass.
@@ -1372,6 +1378,7 @@ where
 }
 
 /// IntoPy + Clone fallback case, which was the only behaviour before PyO3 0.22.
+#[allow(deprecated)]
 impl<ClassT, FieldT, Offset>
     PyClassGetterGenerator<ClassT, FieldT, Offset, false, false, true, false, false>
 where
@@ -1415,66 +1422,6 @@ impl<ClassT: PyClass, FieldT, Offset: OffsetCalculator<ClassT, FieldT>>
              and `IntoPy` are fully removed this will be replaced by the temporary `IntoPyObject` case above."
         )
     }
-}
-
-/// Trait used to combine with zero-sized types to calculate at compile time
-/// some property of a type.
-///
-/// The trick uses the fact that an associated constant has higher priority
-/// than a trait constant, so we can use the trait to define the false case.
-///
-/// The true case is defined in the zero-sized type's impl block, which is
-/// gated on some property like trait bound or only being implemented
-/// for fixed concrete types.
-pub trait Probe {
-    const VALUE: bool = false;
-}
-
-macro_rules! probe {
-    ($name:ident) => {
-        pub struct $name<T>(PhantomData<T>);
-        impl<T> Probe for $name<T> {}
-    };
-}
-
-probe!(IsPyT);
-
-impl<T> IsPyT<Py<T>> {
-    pub const VALUE: bool = true;
-}
-
-probe!(IsToPyObject);
-
-#[allow(deprecated)]
-impl<T: ToPyObject> IsToPyObject<T> {
-    pub const VALUE: bool = true;
-}
-
-probe!(IsIntoPy);
-
-impl<T: IntoPy<crate::PyObject>> IsIntoPy<T> {
-    pub const VALUE: bool = true;
-}
-
-probe!(IsIntoPyObjectRef);
-
-// Possible clippy beta regression,
-// see https://github.com/rust-lang/rust-clippy/issues/13578
-#[allow(clippy::extra_unused_lifetimes)]
-impl<'a, 'py, T: 'a> IsIntoPyObjectRef<T>
-where
-    &'a T: IntoPyObject<'py>,
-{
-    pub const VALUE: bool = true;
-}
-
-probe!(IsIntoPyObject);
-
-impl<'py, T> IsIntoPyObject<T>
-where
-    T: IntoPyObject<'py>,
-{
-    pub const VALUE: bool = true;
 }
 
 /// ensures `obj` is not mutably aliased
@@ -1556,6 +1503,7 @@ where
         .into_ptr())
 }
 
+#[allow(deprecated)]
 fn pyo3_get_value<
     ClassT: PyClass,
     FieldT: IntoPy<Py<PyAny>> + Clone,
@@ -1570,6 +1518,31 @@ fn pyo3_get_value<
     // SAFETY: Offset is known to describe the location of the value, and
     // _holder is preventing mutable aliasing
     Ok((unsafe { &*value }).clone().into_py(py).into_ptr())
+}
+
+pub struct ConvertField<
+    const IMPLEMENTS_INTOPYOBJECT_REF: bool,
+    const IMPLEMENTS_INTOPYOBJECT: bool,
+>;
+
+impl<const IMPLEMENTS_INTOPYOBJECT: bool> ConvertField<true, IMPLEMENTS_INTOPYOBJECT> {
+    #[inline]
+    pub fn convert_field<'a, 'py, T>(obj: &'a T, py: Python<'py>) -> PyResult<Py<PyAny>>
+    where
+        &'a T: IntoPyObject<'py>,
+    {
+        obj.into_py_any(py)
+    }
+}
+
+impl<const IMPLEMENTS_INTOPYOBJECT: bool> ConvertField<false, IMPLEMENTS_INTOPYOBJECT> {
+    #[inline]
+    pub fn convert_field<'py, T>(obj: &T, py: Python<'py>) -> PyResult<Py<PyAny>>
+    where
+        T: PyO3GetField<'py>,
+    {
+        obj.clone().into_py_any(py)
+    }
 }
 
 #[cfg(test)]

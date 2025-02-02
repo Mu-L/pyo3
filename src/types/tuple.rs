@@ -1,21 +1,18 @@
 use std::iter::FusedIterator;
 
-use crate::conversion::{private, IntoPyObject};
 use crate::ffi::{self, Py_ssize_t};
 use crate::ffi_ptr_ext::FfiPtrExt;
 #[cfg(feature = "experimental-inspect")]
 use crate::inspect::types::TypeInfo;
 use crate::instance::Borrowed;
 use crate::internal_tricks::get_ssize_index;
-use crate::types::{
-    any::PyAnyMethods, sequence::PySequenceMethods, PyDict, PyList, PySequence, PyString,
+use crate::types::{any::PyAnyMethods, sequence::PySequenceMethods, PyList, PySequence};
+use crate::{
+    exceptions, Bound, FromPyObject, IntoPyObject, IntoPyObjectExt, Py, PyAny, PyErr, PyObject,
+    PyResult, Python,
 };
 #[allow(deprecated)]
-use crate::ToPyObject;
-use crate::{
-    exceptions, Bound, BoundObject, FromPyObject, IntoPy, Py, PyAny, PyErr, PyObject, PyResult,
-    Python,
-};
+use crate::{IntoPy, ToPyObject};
 
 #[inline]
 #[track_caller]
@@ -102,12 +99,7 @@ impl PyTuple {
         T: IntoPyObject<'py>,
         U: ExactSizeIterator<Item = T>,
     {
-        let elements = elements.into_iter().map(|e| {
-            e.into_pyobject(py)
-                .map(BoundObject::into_any)
-                .map(BoundObject::into_bound)
-                .map_err(Into::into)
-        });
+        let elements = elements.into_iter().map(|e| e.into_bound_py_any(py));
         try_new_from_iter(py, elements)
     }
 
@@ -498,12 +490,14 @@ impl ExactSizeIterator for BorrowedTupleIterator<'_, '_> {
 
 impl FusedIterator for BorrowedTupleIterator<'_, '_> {}
 
+#[allow(deprecated)]
 impl IntoPy<Py<PyTuple>> for Bound<'_, PyTuple> {
     fn into_py(self, _: Python<'_>) -> Py<PyTuple> {
         self.unbind()
     }
 }
 
+#[allow(deprecated)]
 impl IntoPy<Py<PyTuple>> for &'_ Bound<'_, PyTuple> {
     fn into_py(self, _: Python<'_>) -> Py<PyTuple> {
         self.clone().unbind()
@@ -524,17 +518,14 @@ macro_rules! tuple_conversion ({$length:expr,$(($refN:ident, $n:tt, $T:ident)),+
     #[allow(deprecated)]
     impl <$($T: ToPyObject),+> ToPyObject for ($($T,)+) {
         fn to_object(&self, py: Python<'_>) -> PyObject {
-            array_into_tuple(py, [$(self.$n.to_object(py)),+]).into()
+            array_into_tuple(py, [$(self.$n.to_object(py).into_bound(py)),+]).into()
         }
     }
+
+    #[allow(deprecated)]
     impl <$($T: IntoPy<PyObject>),+> IntoPy<PyObject> for ($($T,)+) {
         fn into_py(self, py: Python<'_>) -> PyObject {
-            array_into_tuple(py, [$(self.$n.into_py(py)),+]).into()
-        }
-
-        #[cfg(feature = "experimental-inspect")]
-        fn type_output() -> TypeInfo {
-            TypeInfo::Tuple(Some(vec![$( $T::type_output() ),+]))
+            array_into_tuple(py, [$(self.$n.into_py(py).into_bound(py)),+]).into()
         }
     }
 
@@ -547,134 +538,296 @@ macro_rules! tuple_conversion ({$length:expr,$(($refN:ident, $n:tt, $T:ident)),+
         type Error = PyErr;
 
         fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-            Ok(array_into_tuple(py, [$(self.$n.into_pyobject(py).map_err(Into::into)?.into_any().unbind()),+]).into_bound(py))
-        }
-    }
-
-    impl <'a, 'py, $($T),+> IntoPyObject<'py> for &'a ($($T,)+)
-    where
-        $(&'a $T: IntoPyObject<'py>,)+
-    {
-        type Target = PyTuple;
-        type Output = Bound<'py, Self::Target>;
-        type Error = PyErr;
-
-        fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-            Ok(array_into_tuple(py, [$(self.$n.into_pyobject(py).map_err(Into::into)?.into_any().unbind()),+]).into_bound(py))
-        }
-    }
-
-    impl <$($T: IntoPy<PyObject>),+> IntoPy<Py<PyTuple>> for ($($T,)+) {
-        fn into_py(self, py: Python<'_>) -> Py<PyTuple> {
-            array_into_tuple(py, [$(self.$n.into_py(py)),+])
+            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+]))
         }
 
         #[cfg(feature = "experimental-inspect")]
         fn type_output() -> TypeInfo {
             TypeInfo::Tuple(Some(vec![$( $T::type_output() ),+]))
         }
+    }
 
-        #[inline]
-        fn __py_call_vectorcall1<'py>(
+    impl <'a, 'py, $($T),+> IntoPyObject<'py> for &'a ($($T,)+)
+    where
+        $(&'a $T: IntoPyObject<'py>,)+
+        $($T: 'a,)+ // MSRV
+    {
+        type Target = PyTuple;
+        type Output = Bound<'py, Self::Target>;
+        type Error = PyErr;
+
+        fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+            Ok(array_into_tuple(py, [$(self.$n.into_bound_py_any(py)?),+]))
+        }
+
+        #[cfg(feature = "experimental-inspect")]
+        fn type_output() -> TypeInfo {
+            TypeInfo::Tuple(Some(vec![$( <&$T>::type_output() ),+]))
+        }
+    }
+
+    impl<'py, $($T),+> crate::call::private::Sealed for ($($T,)+) where $($T: IntoPyObject<'py>,)+ {}
+    impl<'py, $($T),+> crate::call::PyCallArgs<'py> for ($($T,)+)
+    where
+        $($T: IntoPyObject<'py>,)+
+    {
+        #[cfg(all(Py_3_9, not(any(PyPy, GraalPy, Py_LIMITED_API))))]
+        fn call(
             self,
-            py: Python<'py>,
             function: Borrowed<'_, 'py, PyAny>,
-            _: private::Token,
+            kwargs: Borrowed<'_, '_, crate::types::PyDict>,
+            _: crate::call::private::Token,
         ) -> PyResult<Bound<'py, PyAny>> {
-            cfg_if::cfg_if! {
-                if #[cfg(all(Py_3_9, not(any(PyPy, GraalPy, Py_LIMITED_API))))] {
-                    // We need this to drop the arguments correctly.
-                    let args_bound = [$(self.$n.into_py(py).into_bound(py),)*];
-                    if $length == 1 {
-                        unsafe {
-                            ffi::PyObject_CallOneArg(function.as_ptr(), args_bound[0].as_ptr()).assume_owned_or_err(py)
-                        }
-                    } else {
-                        // Prepend one null argument for `PY_VECTORCALL_ARGUMENTS_OFFSET`.
-                        let mut args = [std::ptr::null_mut(), $(args_bound[$n].as_ptr()),*];
-                        unsafe {
-                            ffi::PyObject_Vectorcall(
-                                function.as_ptr(),
-                                args.as_mut_ptr().add(1),
-                                $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                std::ptr::null_mut(),
-                            )
-                            .assume_owned_or_err(py)
-                        }
-                    }
-                } else {
-                    function.call1(<Self as IntoPy<Py<PyTuple>>>::into_py(self, py).into_bound(py))
-                }
+            let py = function.py();
+            // We need this to drop the arguments correctly.
+            let args_bound = [$(self.$n.into_bound_py_any(py)?,)*];
+            // Prepend one null argument for `PY_VECTORCALL_ARGUMENTS_OFFSET`.
+            let mut args = [std::ptr::null_mut(), $(args_bound[$n].as_ptr()),*];
+            unsafe {
+                ffi::PyObject_VectorcallDict(
+                    function.as_ptr(),
+                    args.as_mut_ptr().add(1),
+                    $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    kwargs.as_ptr(),
+                )
+                .assume_owned_or_err(py)
             }
         }
 
-        #[inline]
-        fn __py_call_vectorcall<'py>(
+        #[cfg(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12)))]
+        fn call_positional(
             self,
-            py: Python<'py>,
             function: Borrowed<'_, 'py, PyAny>,
-            kwargs: Option<Borrowed<'_, '_, PyDict>>,
-            _: private::Token,
+            _: crate::call::private::Token,
         ) -> PyResult<Bound<'py, PyAny>> {
-            cfg_if::cfg_if! {
-                if #[cfg(all(Py_3_9, not(any(PyPy, GraalPy, Py_LIMITED_API))))] {
-                    // We need this to drop the arguments correctly.
-                    let args_bound = [$(self.$n.into_py(py).into_bound(py),)*];
-                    // Prepend one null argument for `PY_VECTORCALL_ARGUMENTS_OFFSET`.
-                    let mut args = [std::ptr::null_mut(), $(args_bound[$n].as_ptr()),*];
-                    unsafe {
-                        ffi::PyObject_VectorcallDict(
-                            function.as_ptr(),
-                            args.as_mut_ptr().add(1),
-                            $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-                            kwargs.map_or_else(std::ptr::null_mut, |kwargs| kwargs.as_ptr()),
-                        )
-                        .assume_owned_or_err(py)
-                    }
-                } else {
-                    function.call(<Self as IntoPy<Py<PyTuple>>>::into_py(self, py).into_bound(py), kwargs.as_deref())
-                }
+            let py = function.py();
+            // We need this to drop the arguments correctly.
+            let args_bound = [$(self.$n.into_bound_py_any(py)?,)*];
+
+            #[cfg(not(Py_LIMITED_API))]
+            if $length == 1 {
+                return unsafe {
+                    ffi::PyObject_CallOneArg(
+                       function.as_ptr(),
+                       args_bound[0].as_ptr()
+                    )
+                    .assume_owned_or_err(py)
+                };
+            }
+
+            // Prepend one null argument for `PY_VECTORCALL_ARGUMENTS_OFFSET`.
+            let mut args = [std::ptr::null_mut(), $(args_bound[$n].as_ptr()),*];
+            unsafe {
+                ffi::PyObject_Vectorcall(
+                    function.as_ptr(),
+                    args.as_mut_ptr().add(1),
+                    $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    std::ptr::null_mut(),
+                )
+                .assume_owned_or_err(py)
             }
         }
 
-        #[inline]
-        fn __py_call_method_vectorcall1<'py>(
+        #[cfg(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12)))]
+        fn call_method_positional(
             self,
-            py: Python<'py>,
             object: Borrowed<'_, 'py, PyAny>,
-            method_name: Borrowed<'_, 'py, PyString>,
-            _: private::Token,
+            method_name: Borrowed<'_, 'py, crate::types::PyString>,
+            _: crate::call::private::Token,
         ) -> PyResult<Bound<'py, PyAny>> {
-            cfg_if::cfg_if! {
-                if #[cfg(all(Py_3_9, not(any(PyPy, GraalPy, Py_LIMITED_API))))] {
-                    // We need this to drop the arguments correctly.
-                    let args_bound = [$(self.$n.into_py(py).into_bound(py),)*];
-                    if $length == 1 {
-                        unsafe {
-                            ffi::PyObject_CallMethodOneArg(
-                                    object.as_ptr(),
-                                    method_name.as_ptr(),
-                                    args_bound[0].as_ptr(),
-                            )
-                            .assume_owned_or_err(py)
-                        }
-                    } else {
-                        let mut args = [object.as_ptr(), $(args_bound[$n].as_ptr()),*];
-                        unsafe {
-                            ffi::PyObject_VectorcallMethod(
-                                method_name.as_ptr(),
-                                args.as_mut_ptr(),
-                                // +1 for the receiver.
-                                1 + $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                std::ptr::null_mut(),
-                            )
-                            .assume_owned_or_err(py)
-                        }
-                    }
-                } else {
-                    object.call_method1(method_name, <Self as IntoPy<Py<PyTuple>>>::into_py(self, py).into_bound(py))
-                }
+            let py = object.py();
+            // We need this to drop the arguments correctly.
+            let args_bound = [$(self.$n.into_bound_py_any(py)?,)*];
+
+            #[cfg(not(Py_LIMITED_API))]
+            if $length == 1 {
+                return unsafe {
+                    ffi::PyObject_CallMethodOneArg(
+                            object.as_ptr(),
+                            method_name.as_ptr(),
+                            args_bound[0].as_ptr(),
+                    )
+                    .assume_owned_or_err(py)
+                };
             }
+
+            let mut args = [object.as_ptr(), $(args_bound[$n].as_ptr()),*];
+            unsafe {
+                ffi::PyObject_VectorcallMethod(
+                    method_name.as_ptr(),
+                    args.as_mut_ptr(),
+                    // +1 for the receiver.
+                    1 + $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    std::ptr::null_mut(),
+                )
+                .assume_owned_or_err(py)
+            }
+
+        }
+
+        #[cfg(not(all(Py_3_9, not(any(PyPy, GraalPy, Py_LIMITED_API)))))]
+        fn call(
+            self,
+            function: Borrowed<'_, 'py, PyAny>,
+            kwargs: Borrowed<'_, 'py, crate::types::PyDict>,
+            token: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            self.into_pyobject_or_pyerr(function.py())?.call(function, kwargs, token)
+        }
+
+        #[cfg(not(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12))))]
+        fn call_positional(
+            self,
+            function: Borrowed<'_, 'py, PyAny>,
+            token: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            self.into_pyobject_or_pyerr(function.py())?.call_positional(function, token)
+        }
+
+        #[cfg(not(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12))))]
+        fn call_method_positional(
+            self,
+            object: Borrowed<'_, 'py, PyAny>,
+            method_name: Borrowed<'_, 'py, crate::types::PyString>,
+            token: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            self.into_pyobject_or_pyerr(object.py())?.call_method_positional(object, method_name, token)
+        }
+    }
+
+    impl<'a, 'py, $($T),+> crate::call::private::Sealed for &'a ($($T,)+) where $(&'a $T: IntoPyObject<'py>,)+ $($T: 'a,)+ /*MSRV */ {}
+    impl<'a, 'py, $($T),+> crate::call::PyCallArgs<'py> for &'a ($($T,)+)
+    where
+        $(&'a $T: IntoPyObject<'py>,)+
+        $($T: 'a,)+ // MSRV
+    {
+        #[cfg(all(Py_3_9, not(any(PyPy, GraalPy, Py_LIMITED_API))))]
+        fn call(
+            self,
+            function: Borrowed<'_, 'py, PyAny>,
+            kwargs: Borrowed<'_, '_, crate::types::PyDict>,
+            _: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            let py = function.py();
+            // We need this to drop the arguments correctly.
+            let args_bound = [$(self.$n.into_bound_py_any(py)?,)*];
+            // Prepend one null argument for `PY_VECTORCALL_ARGUMENTS_OFFSET`.
+            let mut args = [std::ptr::null_mut(), $(args_bound[$n].as_ptr()),*];
+            unsafe {
+                ffi::PyObject_VectorcallDict(
+                    function.as_ptr(),
+                    args.as_mut_ptr().add(1),
+                    $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    kwargs.as_ptr(),
+                )
+                .assume_owned_or_err(py)
+            }
+        }
+
+        #[cfg(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12)))]
+        fn call_positional(
+            self,
+            function: Borrowed<'_, 'py, PyAny>,
+            _: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            let py = function.py();
+            // We need this to drop the arguments correctly.
+            let args_bound = [$(self.$n.into_bound_py_any(py)?,)*];
+
+            #[cfg(not(Py_LIMITED_API))]
+            if $length == 1 {
+                return unsafe {
+                    ffi::PyObject_CallOneArg(
+                       function.as_ptr(),
+                       args_bound[0].as_ptr()
+                    )
+                    .assume_owned_or_err(py)
+                };
+            }
+
+            // Prepend one null argument for `PY_VECTORCALL_ARGUMENTS_OFFSET`.
+            let mut args = [std::ptr::null_mut(), $(args_bound[$n].as_ptr()),*];
+            unsafe {
+                ffi::PyObject_Vectorcall(
+                    function.as_ptr(),
+                    args.as_mut_ptr().add(1),
+                    $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    std::ptr::null_mut(),
+                )
+                .assume_owned_or_err(py)
+            }
+        }
+
+        #[cfg(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12)))]
+        fn call_method_positional(
+            self,
+            object: Borrowed<'_, 'py, PyAny>,
+            method_name: Borrowed<'_, 'py, crate::types::PyString>,
+            _: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            let py = object.py();
+            // We need this to drop the arguments correctly.
+            let args_bound = [$(self.$n.into_bound_py_any(py)?,)*];
+
+            #[cfg(not(Py_LIMITED_API))]
+            if $length == 1 {
+                return unsafe {
+                    ffi::PyObject_CallMethodOneArg(
+                            object.as_ptr(),
+                            method_name.as_ptr(),
+                            args_bound[0].as_ptr(),
+                    )
+                    .assume_owned_or_err(py)
+                };
+            }
+
+            let mut args = [object.as_ptr(), $(args_bound[$n].as_ptr()),*];
+            unsafe {
+                ffi::PyObject_VectorcallMethod(
+                    method_name.as_ptr(),
+                    args.as_mut_ptr(),
+                    // +1 for the receiver.
+                    1 + $length + ffi::PY_VECTORCALL_ARGUMENTS_OFFSET,
+                    std::ptr::null_mut(),
+                )
+                .assume_owned_or_err(py)
+            }
+        }
+
+        #[cfg(not(all(Py_3_9, not(any(PyPy, GraalPy, Py_LIMITED_API)))))]
+        fn call(
+            self,
+            function: Borrowed<'_, 'py, PyAny>,
+            kwargs: Borrowed<'_, 'py, crate::types::PyDict>,
+            token: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            self.into_pyobject_or_pyerr(function.py())?.call(function, kwargs, token)
+        }
+
+        #[cfg(not(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12))))]
+        fn call_positional(
+            self,
+            function: Borrowed<'_, 'py, PyAny>,
+            token: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            self.into_pyobject_or_pyerr(function.py())?.call_positional(function, token)
+        }
+
+        #[cfg(not(all(not(any(PyPy, GraalPy)), any(all(Py_3_9, not(Py_LIMITED_API)), Py_3_12))))]
+        fn call_method_positional(
+            self,
+            object: Borrowed<'_, 'py, PyAny>,
+            method_name: Borrowed<'_, 'py, crate::types::PyString>,
+            token: crate::call::private::Token,
+        ) -> PyResult<Bound<'py, PyAny>> {
+            self.into_pyobject_or_pyerr(object.py())?.call_method_positional(object, method_name, token)
+        }
+    }
+
+    #[allow(deprecated)]
+    impl <$($T: IntoPy<PyObject>),+> IntoPy<Py<PyTuple>> for ($($T,)+) {
+        fn into_py(self, py: Python<'_>) -> Py<PyTuple> {
+            array_into_tuple(py, [$(self.$n.into_py(py).into_bound(py)),+]).unbind()
         }
     }
 
@@ -700,10 +853,13 @@ macro_rules! tuple_conversion ({$length:expr,$(($refN:ident, $n:tt, $T:ident)),+
     }
 });
 
-fn array_into_tuple<const N: usize>(py: Python<'_>, array: [PyObject; N]) -> Py<PyTuple> {
+fn array_into_tuple<'py, const N: usize>(
+    py: Python<'py>,
+    array: [Bound<'py, PyAny>; N],
+) -> Bound<'py, PyTuple> {
     unsafe {
         let ptr = ffi::PyTuple_New(N.try_into().expect("0 < N <= 12"));
-        let tup = Py::from_owned_ptr(py, ptr);
+        let tup = ptr.assume_owned(py).downcast_into_unchecked();
         for (index, obj) in array.into_iter().enumerate() {
             #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
             ffi::PyTuple_SET_ITEM(ptr, index as ffi::Py_ssize_t, obj.into_ptr());

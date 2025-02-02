@@ -23,11 +23,9 @@ use crate::types::any::PyAnyMethods;
 use crate::types::list::new_from_iter;
 use crate::types::{PySequence, PyString};
 use crate::PyErr;
+use crate::{err::DowncastError, ffi, Bound, FromPyObject, PyAny, PyObject, PyResult, Python};
 #[allow(deprecated)]
-use crate::ToPyObject;
-use crate::{
-    err::DowncastError, ffi, Bound, FromPyObject, IntoPy, PyAny, PyObject, PyResult, Python,
-};
+use crate::{IntoPy, ToPyObject};
 use smallvec::{Array, SmallVec};
 
 #[allow(deprecated)]
@@ -41,6 +39,7 @@ where
     }
 }
 
+#[allow(deprecated)]
 impl<A> IntoPy<PyObject> for SmallVec<A>
 where
     A: Array,
@@ -50,11 +49,6 @@ where
         let mut iter = self.into_iter().map(|e| e.into_py(py));
         let list = new_from_iter(py, &mut iter);
         list.into()
-    }
-
-    #[cfg(feature = "experimental-inspect")]
-    fn type_output() -> TypeInfo {
-        TypeInfo::list_of(A::Item::type_output())
     }
 }
 
@@ -75,12 +69,18 @@ where
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         <A::Item>::owned_sequence_into_pyobject(self, py, crate::conversion::private::Token)
     }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::list_of(A::Item::type_output())
+    }
 }
 
 impl<'a, 'py, A> IntoPyObject<'py> for &'a SmallVec<A>
 where
     A: Array,
     &'a A::Item: IntoPyObject<'py>,
+    A::Item: 'a, // MSRV
 {
     type Target = PyAny;
     type Output = Bound<'py, Self::Target>;
@@ -89,6 +89,11 @@ where
     #[inline]
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         self.as_slice().into_pyobject(py)
+    }
+
+    #[cfg(feature = "experimental-inspect")]
+    fn type_output() -> TypeInfo {
+        TypeInfo::list_of(<&A::Item>::type_output())
     }
 }
 
@@ -138,6 +143,7 @@ mod tests {
     use crate::types::{PyBytes, PyBytesMethods, PyDict, PyList};
 
     #[test]
+    #[allow(deprecated)]
     fn test_smallvec_into_py() {
         Python::with_gil(|py| {
             let sv: SmallVec<[u64; 8]> = [1, 2, 3, 4, 5].iter().cloned().collect();

@@ -23,11 +23,12 @@ pub use self::float::{PyFloat, PyFloatMethods};
 pub use self::frame::PyFrame;
 pub use self::frozenset::{PyFrozenSet, PyFrozenSetBuilder, PyFrozenSetMethods};
 pub use self::function::PyCFunction;
-#[cfg(all(not(Py_LIMITED_API), not(all(PyPy, not(Py_3_8))), not(GraalPy)))]
+#[cfg(all(not(Py_LIMITED_API), not(all(PyPy, not(Py_3_8)))))]
 pub use self::function::PyFunction;
 pub use self::iterator::PyIterator;
 pub use self::list::{PyList, PyListMethods};
 pub use self::mapping::{PyMapping, PyMappingMethods};
+pub use self::mappingproxy::PyMappingProxy;
 pub use self::memoryview::PyMemoryView;
 pub use self::module::{PyModule, PyModuleMethods};
 pub use self::none::PyNone;
@@ -238,6 +239,8 @@ mod code;
 pub(crate) mod complex;
 #[cfg(not(Py_LIMITED_API))]
 pub(crate) mod datetime;
+#[cfg(all(Py_LIMITED_API, any(feature = "chrono", feature = "jiff-01")))]
+pub(crate) mod datetime_abi3;
 pub(crate) mod dict;
 mod ellipsis;
 pub(crate) mod float;
@@ -248,6 +251,7 @@ mod function;
 pub(crate) mod iterator;
 pub(crate) mod list;
 pub(crate) mod mapping;
+pub(crate) mod mappingproxy;
 mod memoryview;
 pub(crate) mod module;
 mod none;
